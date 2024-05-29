@@ -14,7 +14,7 @@ use winit::{
 
 use crate::{entity::EntityList, vertex::Vertex};
 
-pub struct BaseRenderer<'a> {
+pub struct BaseRenderer<'a, T> {
     surface: Surface<'a>,
     window: &'a Window,
     queue: Rc<Queue>,
@@ -24,10 +24,11 @@ pub struct BaseRenderer<'a> {
     render_pipeline: RenderPipeline,
     pub(crate) entities: EntityList, 
     multisample_texture: wgpu::Texture,
-    main_loop: Option<&'a mut dyn FnMut(&'a mut EntityList) -> ()>,
+    // main_loop: Option<&'a mut dyn FnMut(&'a mut EntityList) -> ()>,
+    main_loop: Option<T>,
 }
 
-impl<'a> BaseRenderer<'a> {
+impl<'a, T: for<'b> FnMut(&'b mut EntityList)> BaseRenderer<'a, T> {
     pub async fn new(window: &'a Window) -> Self {
         let size = window.inner_size();
 
@@ -178,7 +179,7 @@ impl<'a> BaseRenderer<'a> {
         }
     }
 
-    pub fn set_main_loop<T: FnMut(&'a mut EntityList)>(&mut self, main_loop: &'a mut T) {
+    pub fn set_main_loop(&mut self, main_loop: T) {
         self.main_loop = Some(main_loop);
     }
 
@@ -295,7 +296,6 @@ impl<'a> BaseRenderer<'a> {
             });
 
         self.entities.update();
-        // (self.draw_function)(&mut self.entities);
 
         let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("Render pass"),
@@ -312,6 +312,11 @@ impl<'a> BaseRenderer<'a> {
             occlusion_query_set: None,
         });
     
+        match &mut self.main_loop {
+            Some(func) => func(&mut self.entities),
+            None => (),
+        };
+
         render_pass.set_pipeline(&self.render_pipeline);
         for entity in &self.entities.entities[..] {
             // println!("{:?}", entity.vertex_buffer.slice(..));

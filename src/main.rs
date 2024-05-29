@@ -51,9 +51,12 @@ fn main() {
 
     let mut x = 0;
 
-    let mut pl = |el| {
+    let mut func = |el: &mut EntityList| {
         if x == 1 { x += 2; }
     };
-    renderer.set_main_loop(&mut pl);
+    renderer.set_main_loop(&mut func);
+
     renderer.run(event_loop);
+
+    // drop(renderer);
 }
