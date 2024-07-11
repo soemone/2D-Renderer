@@ -224,7 +224,7 @@ impl Entity {
         
         self.shader_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { 
             label: Some("Shader Arguments Bind Group"), 
-            layout: &shader_layout, 
+            layout: &shader_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 1,
                 resource: self.shader_buffer.as_entire_binding(),
