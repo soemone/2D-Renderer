@@ -3,12 +3,13 @@ mod base_renderer;
 mod vertex;
 mod utils;
 mod entity;
+mod circle;
 
 // Imports
 use base_renderer::BaseRenderer;
 use entity::EntityList;
-use utils::{defaults::Float, Mat4x4, Vector};
-use wgpu::core::{device, identity};
+use utils::Vector;
+use circle::Circle;
 use winit::{
     dpi::PhysicalSize, 
     event_loop::EventLoop, 
@@ -28,35 +29,57 @@ fn main() {
         WindowBuilder::new()
             .with_title("Render Test")
             .with_theme(Some(Theme::Dark))
-            .with_inner_size(PhysicalSize::new(720, 720))
+            .with_inner_size(PhysicalSize::new(1200, 1200))
             .build(&event_loop)
             .unwrap();
         
     let mut renderer = BaseRenderer::new(&window).block_on();
     let entity_list = &mut renderer.entities;
-    let e1 = entity_list.add_entity();
-    e1.create(|e| {
-        let verts = utils::generate_regular_geometry(16, 0.1, Vector::new(0.0, 0.0), 0.0);
-        let mut indices = Vec::with_capacity(verts.len());
-        for i in 0..verts.len() {
-            indices.push(i as u32);
-        }
-        let tris_right = utils::generate_triangles(indices);
-        e.set_geometry(&verts, &tris_right);
-    });
 
-    e1.set_update(|e| {
-        e.shear_by(0.02);
-    });
+    let mut circles = Vec::new();
 
-    let mut x = 0;
+    circles.push(
+        Circle::new(
+            entity_list,
+            1, 
+            0.02, 
+            Vector::new(0.0, 0.5), 
+            Vector::new(-0.0002, 0.0), 
+            Vector::new(0.0, 0.0)
+        )
+    );
 
-    let mut func = |el: &mut EntityList| {
-        if x == 1 { x += 2; }
+    circles.push(
+        Circle::new(
+            entity_list,
+            1, 
+            0.02, 
+            Vector::new(-0.4330127019, -0.25), 
+            Vector::new(0.0001, -0.00017320508076), 
+            Vector::new(0.0, 0.0)
+        )
+    );
+
+    circles.push(
+        Circle::new(
+            entity_list, 
+            1, 
+            0.02, 
+            Vector::new(0.4330127019, -0.25), 
+            Vector::new(0.0001, 0.0001732), 
+            Vector::new(0.0, 0.0)
+        )
+    );
+
+    let func = |el: &mut EntityList| {
+        // Apply gravity on each circle
+        Circle::gravity(&mut circles);
+        // Update each circle's data
+        Circle::update(&mut circles, el);
     };
-    renderer.set_main_loop(&mut func);
+
+    renderer.set_main_loop(func);
 
     renderer.run(event_loop);
-
     // drop(renderer);
 }

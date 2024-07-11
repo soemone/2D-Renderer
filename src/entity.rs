@@ -1,8 +1,18 @@
-use std::{borrow::Borrow, rc::Rc};
+use std::{ 
+    rc::Rc, 
+    slice::{ 
+        IterMut, Iter 
+    } 
+};
 
-use wgpu::{core::device::queue, util::DeviceExt};
+use wgpu::util::DeviceExt;
 
-use crate::{utils::{ as_u8_slice, defaults::*, Mat4x4, Vector }, vertex::Vertex};
+use crate::{
+    utils::{ 
+        as_u8_slice, defaults::*, 
+        Mat4x4, Vector 
+    }, utils
+};
 
 pub struct EntityList {
     pub(crate) entities: Vec<Entity>,
@@ -15,48 +25,50 @@ impl EntityList {
         Self { entities: vec![], device, queue }
     }
 
-    // pub fn add(&mut self, entity: Entity) { self.entities.push(entity) }
-
     pub fn add_entity(&mut self) -> &mut Entity {
         let entity = Entity::default(self.device.clone(), self.queue.clone());
         self.entities.push(entity);
         return self.entities.last_mut().unwrap();
     }
 
-    pub fn first_run(&mut self) {
-        for mut entity in &mut self.entities {
-            (entity.create_fn)(&mut entity);
-        }
+    pub fn get_entity(&mut self, index: usize) -> Option<&mut Entity> {
+        self.entities.get_mut(index)
     }
 
-    pub fn update(&mut self) {
-        for mut entity in &mut self.entities {
-            (entity.update_fn)(&mut entity);
-        }
+    pub fn get_entity_unchecked(&mut self, index: usize) -> &mut Entity {
+        &mut self.entities[index]
     }
 
-    // pub fn generate_entity(&mut self, vertex_data: &Vec<Vector<Float>>, index_data: &Vec<u32>) -> usize {
-    //     let entity = Entity::new(vertex_data, index_data, Mat4x4::identity(), &self.device, &self);
-    //     self.entities.push(entity);
-    //     return self.entities.len() - 1;
-    // }
+    pub fn delete_entity(&mut self, index: usize) {
+        self.entities.remove(index);
+    }
 
-    // pub fn get_entity(&mut self, index: usize) -> Option<&mut Entity> {
-    //     self.entities.get_mut(index)
-    // }
+    pub fn iter_mut(&mut self) -> IterMut<'_, Entity>{
+        self.entities.iter_mut()
+    }
+
+    pub fn iter(&mut self) -> Iter<'_, Entity>{
+        self.entities.iter()
+    }
+
+    pub fn count(&self) -> usize {
+        self.entities.len()
+    }
+    
 }
 
 pub struct Entity {
     pub(crate) vertex_buffer: wgpu::Buffer,
     pub(crate) index_buffer: wgpu::Buffer,
     pub(crate) transform_buffer: wgpu::Buffer,
+    pub(crate) shader_buffer: wgpu::Buffer,
     pub(crate) transform_bind_group: wgpu::BindGroup,
+    pub(crate) shader_bind_group: wgpu::BindGroup,
     pub(crate) transform: Mat4x4,
     pub(crate) index_size: Index,
-    pub(crate) update_fn: fn(&mut Entity) -> (),
-    pub(crate) create_fn: fn(&mut Entity) -> (),
     pub(crate) device: Rc<wgpu::Device>,
     pub(crate) queue: Rc<wgpu::Queue>,
+    pub(crate) render_pipeline: Option<wgpu::RenderPipeline>,
 }
 
 impl Entity { 
@@ -68,15 +80,17 @@ impl Entity {
     pub fn new(
         vertex_data: &Vec<Vector<Float>>, 
         index_data: &Vec<Index>, 
-        transform: Mat4x4, 
+        transform: Mat4x4,
         device: Rc<wgpu::Device>, 
-        queue: Rc<wgpu::Queue>
+        queue: Rc<wgpu::Queue>,
     ) -> Self {
         let (vertex_slice, index_slice) = (vertex_data.as_slice(), index_data.as_slice());
          
         let transform_buffer = Self::transform_buffer(&device, transform);
+        let shader_buffer = Self::shader_args_buffer::<[f32; 1]>(&device, [0.0]);
         
-        let transform_layout = Self::transform_layout(&device);
+        let transform_layout = utils::generate_transform_layout(&device);
+        let shader_layout = utils::generate_shader_args_layout(&device);
 
         let transform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { 
             label: Some("Position Bind Group"), 
@@ -86,9 +100,17 @@ impl Entity {
                 resource: transform_buffer.as_entire_binding(),
             }]
         });
+
         
-        fn update_fn(_a: &mut Entity) {}
-        fn create_fn(_a: &mut Entity) {}
+        let shader_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor { 
+            label: Some("Shader Arguments Bind Group"), 
+            layout: &shader_layout, 
+            entries: &[wgpu::BindGroupEntry {
+                binding: 1,
+                resource: shader_buffer.as_entire_binding(),
+            }]
+        });
+
 
         Entity {
             index_size: index_data.len() as Index,
@@ -103,25 +125,17 @@ impl Entity {
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             }),
             transform_buffer,
+            shader_buffer,
             transform_bind_group,
+            shader_bind_group,
+            render_pipeline: None,
             transform,
-            update_fn,
-            create_fn,
             device,
             queue,
         }
     }
 
-    pub fn create(&mut self, function: fn(&mut Entity) -> ()) {
-        self.create_fn = function;
-    }
-
-    pub fn set_update(&mut self, function: fn(&mut Entity) -> ()) { 
-        self.update_fn = function;
-    }
-
     pub fn set_geometry(&mut self, vertices: &Vec<Vector<Float>>, indices: &Vec<Index>) {
-        // Hi?
         self.index_size = indices.len() as Index;
 
         self.index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -135,9 +149,6 @@ impl Entity {
             contents: as_u8_slice(vertices),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
-
-        // queue.write_buffer(&self.vertex_buffer, 0, as_u8_slice(vertices));
-        // queue.write_buffer(&self.index_buffer, 0, as_u8_slice(indices));
     }
 
     fn send_transform(&mut self, transform: Mat4x4) {
@@ -174,12 +185,12 @@ impl Entity {
         self.send_transform(self.transform);
     }
 
-    pub fn shear_to(&mut self, shear_angle: Float) {
+    pub fn shear_to(&mut self, shear_angle: Vector<Float>) {
         self.transform.shear_to(shear_angle);
         self.send_transform(self.transform);
     }
 
-    pub fn shear_by(&mut self, shear_displacement_angle: Float) {
+    pub fn shear_by(&mut self, shear_displacement_angle: Vector<Float>) {
         self.transform.shear_by(shear_displacement_angle);
         self.send_transform(self.transform);
     }
@@ -194,6 +205,38 @@ impl Entity {
     
     pub fn set_transform(&mut self, new_transform: Mat4x4) { self.transform = new_transform; }
 
+    pub fn set_shader(&mut self, shader: wgpu::ShaderModuleDescriptor) {
+        self.render_pipeline = 
+            Some(
+                utils::generate_render_pipeline(
+                    &self.device, 
+                    wgpu::TextureFormat::Rgba8UnormSrgb, 
+                    self.device.create_shader_module(shader)
+                )
+            );
+    }
+
+    pub fn set_shader_args<T>(&mut self, args: T) {
+        let shader_buffer = Self::shader_args_buffer(&self.device, args);
+        let shader_layout = utils::generate_shader_args_layout(&self.device);
+
+        self.shader_buffer = shader_buffer;
+        
+        self.shader_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { 
+            label: Some("Shader Arguments Bind Group"), 
+            layout: &shader_layout, 
+            entries: &[wgpu::BindGroupEntry {
+                binding: 1,
+                resource: self.shader_buffer.as_entire_binding(),
+            }]
+        });
+    }
+
+    /// Use this when updating shader data per frame with the SAME TYPE of data (Size of data has to be the same as the last instance sent to `set_shader_args`) 
+    pub fn send_shader_args<T>(&mut self, args: T) {
+        self.queue.write_buffer(&self.shader_buffer, 0, as_u8_slice(&[args]));
+    }
+
     fn transform_buffer(device: &wgpu::Device, transform: Mat4x4) -> wgpu::Buffer {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Entity Position Buffer"),
@@ -202,19 +245,11 @@ impl Entity {
         })
     }
 
-    fn transform_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { 
-            label: Some("Transform Bind Group Layout Desc"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { 
-                    ty: wgpu::BufferBindingType::Uniform, 
-                    has_dynamic_offset: false, 
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+    fn shader_args_buffer<T>(device: &wgpu::Device, arguments: T) -> wgpu::Buffer {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Shader Arguments Buffer"),
+            contents: as_u8_slice(&[arguments]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         })
     }
 

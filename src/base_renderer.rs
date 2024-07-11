@@ -1,18 +1,24 @@
-
-
 use std::rc::Rc;
 
 use wgpu::{
-    core::device::queue, util::{BufferInitDescriptor, DeviceExt}, Buffer, BufferUsages, Color, CommandEncoderDescriptor, Device, LoadOp, Operations, Queue, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, StoreOp, Surface, SurfaceConfiguration, SurfaceError, TextureViewDescriptor
+    Color, CommandEncoderDescriptor, Device, 
+    LoadOp, Operations, Queue, 
+    RenderPassColorAttachment, RenderPassDescriptor, 
+    RenderPipeline, StoreOp, Surface, 
+    SurfaceConfiguration, SurfaceError, TextureViewDescriptor
 };
 use winit::{
     dpi::PhysicalSize,
-    event::{Event, WindowEvent},
+    event::{
+        Event, WindowEvent
+    },
     event_loop::EventLoop,
     window::Window,
 };
 
-use crate::{entity::EntityList, vertex::Vertex};
+use crate::{
+    entity::EntityList, utils
+};
 
 pub struct BaseRenderer<'a, T> {
     surface: Surface<'a>,
@@ -34,8 +40,8 @@ impl<'a, T: for<'b> FnMut(&'b mut EntityList)> BaseRenderer<'a, T> {
 
         // handle to the GPU
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            // Change it to all backends when possible. For now DX12 and GL work on my integrated gpu [Setting it to ::all() uses Vulkan by default]
-            backends: wgpu::Backends::DX12,
+            // Uses Vulkan by default on Windows?
+            backends: wgpu::Backends::all(),
             ..Default::default()
         });
 
@@ -90,64 +96,9 @@ impl<'a, T: for<'b> FnMut(&'b mut EntityList)> BaseRenderer<'a, T> {
         surface.configure(&device, &config);
 
         let shader = device.create_shader_module(wgpu::include_wgsl!("base_shader.wgsl"));
-
-        let transform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { 
-            label: Some("Transform Bind Group Layout Desc"), 
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { 
-                    ty: wgpu::BufferBindingType::Uniform, 
-                    has_dynamic_offset: false, 
-                    min_binding_size: None, 
-                },
-                count: None,
-            }],
-        });
-
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&transform_layout],
-                push_constant_ranges: &[],
-            });
     
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vertex",
-                buffers: &[Vertex::desc()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fragment",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                // cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 4,
-                mask: !0,
-                alpha_to_coverage_enabled: true,
-            },
-            multiview: None,
-        });
-        
+        let render_pipeline = utils::generate_render_pipeline(&device, config.format, shader);
+
         let multisample_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Multisample texture"),
             size: wgpu::Extent3d { width: size.width, height: size.height, depth_or_array_layers: 1 },
@@ -174,7 +125,6 @@ impl<'a, T: for<'b> FnMut(&'b mut EntityList)> BaseRenderer<'a, T> {
             render_pipeline,
             entities,
             multisample_texture,
-            // main_loop: &mut |e| {},
             main_loop: None,
         }
     }
@@ -184,26 +134,12 @@ impl<'a, T: for<'b> FnMut(&'b mut EntityList)> BaseRenderer<'a, T> {
     }
 
     pub fn run(&mut self, event_loop: EventLoop<()>) {
-        use coarsetime::{Instant, Duration, Updater};
+        use coarsetime::Instant;
 
         let mut frames = 0u64;
         let mut fps = 0.6f32;
         let mut time = Instant::now();
-        // let (tx, rx) = std::sync::mpsc::channel();
-        // let mut fps = std::sync::Arc::new(60.6);
-        // std::thread::spawn( move || {
-        //     let mut time = std::time::Instant::now();
-        //     loop {
-        //         // let frames = rx.iter().last().unwrap_or(0);
-        //         // let fps = (frames as f32 / time.elapsed().as_secs() as f32);
-        //         println!("REAL FPS: 0. Frames: {:?}. elapsed: {:?}", frames, 0); 
-        //         // time = std::time::Instant::now();
-        //         // std::thread::sleep(Duration::from_millis(500));
-        //     }
-        // });
         
-        self.entities.first_run();
-
         event_loop
             .run(move |event, window_target| {
                 match event {
@@ -284,18 +220,19 @@ impl<'a, T: for<'b> FnMut(&'b mut EntityList)> BaseRenderer<'a, T> {
 
     fn render(&mut self) -> Result<(), SurfaceError> {
         let output = self.surface.get_current_texture()?;
+        
         let multisample_view = 
             self.multisample_texture.create_view(&TextureViewDescriptor::default());
+        
         let view = output
             .texture
             .create_view(&TextureViewDescriptor::default());
+
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
                 label: Some("Encoder of the renderer"),
             });
-
-        self.entities.update();
 
         let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("Render pass"),
@@ -303,7 +240,7 @@ impl<'a, T: for<'b> FnMut(&'b mut EntityList)> BaseRenderer<'a, T> {
                 view: &multisample_view,
                 resolve_target: Some(&view),
                 ops: Operations {
-                    load: LoadOp::Clear(Color { r: 0.5, g: 0.5, b: 0.5, a: 1.0, }),
+                    load: LoadOp::Clear(Color { r: 0.3, g: 0.3, b: 0.3, a: 1.0, }),
                     store: StoreOp::Store,
                 },
             })],
@@ -317,12 +254,23 @@ impl<'a, T: for<'b> FnMut(&'b mut EntityList)> BaseRenderer<'a, T> {
             None => (),
         };
 
-        render_pass.set_pipeline(&self.render_pipeline);
         for entity in &self.entities.entities[..] {
-            // println!("{:?}", entity.vertex_buffer.slice(..));
+
+            // Select shader here
+            if let Some(render_pipeline) = &entity.render_pipeline {
+                render_pass.set_pipeline(render_pipeline);
+            } else {
+                render_pass.set_pipeline(&self.render_pipeline);
+            }
+
+            // Set shader transform
             render_pass.set_bind_group(0, &entity.transform_bind_group, &[]);
+            // Set shader parameters
+            render_pass.set_bind_group(1, &entity.shader_bind_group, &[]);
+            // Pass buffers
             render_pass.set_vertex_buffer(0, entity.vertex_buffer.slice(..));
             render_pass.set_index_buffer(entity.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            // Draw
             render_pass.draw_indexed(0..entity.index_size, 0, 0..1);   
         }
 

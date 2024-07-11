@@ -5,9 +5,17 @@ pub mod defaults {
     pub const PI: Float = std::f32::consts::PI;
 }
 
+use std::ops::{
+    Add, AddAssign, Div, 
+    DivAssign, Mul, Sub, 
+    SubAssign
+};
+
 use defaults::{
     Float, UInt, Index
 };
+
+use crate::vertex::Vertex;
 
 pub fn as_u8_slice<T>(p: &[T]) -> &[u8] {
     unsafe {
@@ -65,7 +73,7 @@ impl Mat4x4 {
     }
 
     pub fn rotate_by(&mut self, displacement_angle: Float) {
-        let initial_angle = Float::atan2(self.value[1][0], self.value[0][0]);
+        let initial_angle = Float::atan2(-self.value[0][1], self.value[0][0]);
         let (cval, sval) = (Float::cos(initial_angle + displacement_angle), Float::sin(initial_angle + displacement_angle));
         self.value[0][0] = cval;
         self.value[1][1] = cval;
@@ -99,18 +107,20 @@ impl Mat4x4 {
         Vector::new(self.value[0][0], self.value[1][1])
     }
 
-    // TODO: Is this the correct way to shear?
-    pub fn shear_to(&mut self, shear_angle: Float) {
-        self.value[0][1] = shear_angle;
-        // self.value[1][0] = shear_angle;
+    // TODO: Is this the correct way to shear? - maybe not
+    // How do I combine shear and rotate?
+    pub fn shear_to(&mut self, shear_angle: Vector<Float>) {
+        self.value[0][1] = shear_angle.x();
+        self.value[1][0] = shear_angle.y();
     }
 
-    pub fn shear_by(&mut self, shear_displacement_angle: Float) {
-        self.value[0][1] += shear_displacement_angle;
-        // self.value[1][0] += shear_displacement_angle;
+    pub fn shear_by(&mut self, shear_displacement_angle: Vector<Float>) {
+        self.value[1][1] += shear_displacement_angle.x(); 
+        self.value[1][0] += shear_displacement_angle.y();
     }
 }
 
+// Probably useless...
 #[derive(Clone, Debug)]
 pub struct Polygon {
     vertices: Vec<Vector<Float>>,
@@ -129,9 +139,19 @@ pub struct Vector<T: Clone + Copy> {
     pub pos: [T; 2],
 }
 
-impl<T: Copy + Clone> Vector<T> {
-    pub fn new(x: T, y: T) -> Vector<T> {
-        Vector { pos: [x, y] }
+impl<T: 
+    Copy + 
+    Clone + 
+    Add<Output = T> + 
+    AddAssign + 
+    Sub<Output = T> + 
+    SubAssign + 
+    Mul<Output = T> +
+    Div<Output = T> +
+    DivAssign
+> Vector<T> {
+    pub fn new(x: T, y: T) -> Self {
+        Self { pos: [x, y] }
     }
 
     pub fn x(&self) -> T { self.pos[0] }
@@ -139,6 +159,42 @@ impl<T: Copy + Clone> Vector<T> {
 
     pub fn set_x(&mut self, value: T) { self.pos[0] = value; }
     pub fn set_y(&mut self, value: T) { self.pos[1] = value; }
+
+    pub fn add_vec(&mut self, vec: Self) { 
+        self.pos[0] += vec.x();
+        self.pos[1] += vec.y(); 
+    }
+
+    pub fn sub_vec(&mut self, vec: Self) { 
+        self.pos[0] -= vec.x();
+        self.pos[1] -= vec.y(); 
+    }
+
+    pub fn vec_sum(vec1: Self, vec2: Self) -> Self {
+        Self::new(vec1.x() + vec2.x(), vec1.y() + vec2.y())
+    }
+
+    pub fn vec_diff(vec1: Self, vec2: Self) -> Self {
+        Self::new(vec1.x() - vec2.x(), vec1.y() - vec2.y())
+    }
+    
+    pub fn mag(&self) -> T {
+        return self.pos[0] * self.pos[0] + self.pos[1] * self.pos[1];
+    }
+
+    pub fn normalize(&mut self) {
+        let mag = self.mag();
+        self.pos[0] /= mag;
+        self.pos[1] /= mag;
+    }
+
+    pub fn normalized(&self) -> Self {
+        let mag = self.mag();
+        Self::new(
+            self.pos[0] / mag,
+            self.pos[1] / mag
+        )
+    }
 }
 
 impl std::fmt::Display for Vector<Float> {
@@ -180,6 +236,7 @@ pub fn generate_arc(sides: u16, radius: Float, center: Vector<Float>, phase: Flo
 }
 
 // Generate a triangle set that uses the least possible triangles to fill a given set of points - probably
+// TODO: Use an actual algorithm that can handle concave polygons
 pub fn generate_triangles(points: Vec<u32>) -> Vec<u32> {
     if points.len() < 3 { return Vec::new(); }
     let num_triangles = ((points.len() as Float + 0.5) / 2.0) as u16;
@@ -205,7 +262,85 @@ pub fn generate_triangles(points: Vec<u32>) -> Vec<u32> {
     return tris;
 }
 
+// Rendering specific
 
-pub fn triangulate_polygon() {
+pub fn generate_transform_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { 
+        label: Some("Transform Bind Group Layout Desc"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer { 
+                ty: wgpu::BufferBindingType::Uniform, 
+                has_dynamic_offset: false, 
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    })
+}
 
+pub fn generate_shader_args_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { 
+        label: Some("Shader Arguments Bind Group Layout Desc"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::all(),
+            ty: wgpu::BindingType::Buffer { 
+                ty: wgpu::BufferBindingType::Uniform, 
+                has_dynamic_offset: false, 
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    })
+}
+
+
+pub fn generate_render_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, shader: wgpu::ShaderModule) -> wgpu::RenderPipeline {
+
+    let transform_layout = generate_transform_layout(device);
+    let shader_layout = generate_shader_args_layout(device);
+
+    let render_pipeline_layout =
+    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Render Pipeline Layout"),
+        bind_group_layouts: &[&transform_layout, &shader_layout],
+        push_constant_ranges: &[],
+    });
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Render Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vertex",
+            buffers: &[Vertex::desc()],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fragment",
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 4,
+            mask: !0,
+            alpha_to_coverage_enabled: true,
+        },
+        multiview: None,
+    })
 }
